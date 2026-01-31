@@ -46,7 +46,7 @@ files = [
     "/root/.bashrc",
     "/root/.profile",
     "/home/pi/handshakes",
-    "/home/pi/.wpa_sec_uploads"
+    "/home/pi/.wpa_sec_uploads",
     "/home/pi/.bashrc",
     "/home/pi/.profile",
     "/etc/pwnagotchi",
