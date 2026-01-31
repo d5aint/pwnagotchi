@@ -4,851 +4,544 @@ import time
 import html
 import os
 import json
+import glob
 
 import pwnagotchi.plugins as plugins
+import pwnagotchi.ui.fonts as fonts
 import pwnagotchi.utils
 from pwnagotchi.utils import save_config
-
 from flask import render_template_string
 
-
-class auto_tune(plugins.Plugin):
-    __author__ = "Sniffleupagus"
+class AutoTune(plugins.Plugin):
+    __author__ = 'Sniffleupagus, modified by d5aint'
     __version__ = "1.0.1"
-    __license__ = "GPL3"
-    __description__ = "A plugin that adjust AUTO mode parameters"
+    __license__ = 'GPL3'
+    __description__ = 'Adjusts AUTO mode parameters dynamically and provides preset management.'
 
-    # Chistos - should really be an object, but I'm being lazy
-    #
-    # Channel histograms maintained per session
-    # - stat = string : name of the statistic. It is the chart label for this stat
-    # - channel = the channel where the stat happened
-    # - count (default +1) - how much to add to the count for this chisto[stat][channel]
-    #           for example, on_bcap_wifi_ap_new, use the default value, but on_bcap_wifi_ap_lost use -1
-    #           to count current APs per channel
     def __init__(self):
-        self._histogram = {"loops": 0}  # count APs per epoch
+        self._histogram = {'loops': 0}
+        self._chistos = {'_all_actions': {-1: 0}}
 
-        self._chistos = {"_all_actions": {-1: 0}}  # arbitrary session stats per channel
-
-        # plugin data
-        self._unscanned_channels = (
-            []
-        )  # temporary set of channels to pull "extra_channels" from
-        self._active_channels = []  # list of channels with APs found in last scan
-        self._known_aps = {}  # dict of all APs by normalized name+mac
-        self._known_clients = (
-            {}
-        )  # dict of all clients by normalized APmac+STAmac (many clients to not have names)
+        self.ep_data = {}
+        self.last_shake = {'time': time.time()}
+        self._unscanned_channels = []
+        self._active_channels = []
+        self._known_aps = {}
         self._agent = None
-
-        self.descriptions = {  # descriptions of personality variables displayed in webui
-            "advertise": "enable/disable advertising to mesh peers",
-            "deauth": "enable/disable deauthentication attacks",
-            "associate": "enable/disable association attacks",
-            "throttle_a": "delay after an associate. Some delay seems to reduce nexmon crashes",
-            "throttle_d": "delay after a deauthenticate. Delay helps reduce nexmon crashes",
-            "assoc_prob": "probability of trying an associate attack. Set lower to spread out interaction instead of hitting all APs every time until max_interactions",
-            "deauth_prob": "probability of trying a deauth. will spread the 'max_interactions' over a longer time",
-            "min_rssi": "ignore APs with signal weaker than this value. lower values will attack more distant APs",
-            "recon_time": "duration of the bettercap channel hopping scan phase, to discover APs before sending attacks",
-            "min_recon_time": "time spent on each occupied channel per epoch, sending attacks and waiting for handshakes. and epoch is recon_time + #channels * min_recon_time seconds long",
-            "ap_ttl": "APs that have not been seen since this many seconds are ignored. Shorten this if you are moving, to not try to scan APs that are no longer in range.",
-            "sta_ttl": "Clients older than this will ignored",
-        }
-        self.options = dict()
-        self.presets_dir = os.path.expanduser("~/auto-tune-presets")
+        self._orig_mode = 'AUTO'
+        
+        # Safe directory handling
+        self.presets_dir = os.path.join(os.path.expanduser("~"), "auto-tune-presets")
         self._ensure_presets_dir()
 
+        self.descriptions = {
+            "advertise": "Enable/disable advertising to mesh peers",
+            "deauth": "Enable/disable deauthentication attacks",
+            "associate": "Enable/disable association attacks",
+            "throttle_a": "Delay (ms) after association to reduce crashes",
+            "throttle_d": "Delay (ms) after deauth to reduce crashes",
+            "assoc_prob": "Probability of trying an associate attack",
+            "deauth_prob": "Probability of trying a deauth attack",
+            "min_rssi": "Ignore APs with signal weaker than this value",
+            "recon_time": "Duration of bettercap channel hopping scan phase",
+            "min_recon_time": "Time spent on each occupied channel per epoch",
+            "max_interactions": "Max attacks on an AP per session",
+            "ap_ttl": "Ignore APs not seen for this many seconds",
+            "sta_ttl": "Ignore clients older than this many seconds",
+        }
+        self.options = dict()
+
+    # --- Preset Management ---
     def _ensure_presets_dir(self):
-        """Ensure the presets directory exists"""
         try:
             if not os.path.exists(self.presets_dir):
                 os.makedirs(self.presets_dir, mode=0o755)
-                logging.info(f"Created presets directory: {self.presets_dir}")
+                logging.info(f"[auto-tune] Created presets directory: {self.presets_dir}")
         except OSError as e:
-            logging.error(
-                f"Failed to create presets directory {self.presets_dir}: {str(e)}"
-            )
-            raise e
+            logging.error(f"[auto-tune] Failed to create presets directory: {e}")
+
+    def _sanitize_filename(self, filename):
+        """Prevents directory traversal"""
+        return os.path.basename(filename)
 
     def _get_preset_files(self):
-        """Get list of available preset files"""
         try:
             self._ensure_presets_dir()
-            preset_files = []
-            for filename in os.listdir(self.presets_dir):
-                if filename.endswith(".json"):
-                    preset_files.append(filename[:-5])  # Remove .json extension
-            return sorted(preset_files)
-        except OSError as e:
-            logging.error(f"Error reading presets directory: {str(e)}")
+            files = glob.glob(os.path.join(self.presets_dir, "*.json"))
+            return sorted([os.path.splitext(os.path.basename(f))[0] for f in files])
+        except Exception:
             return []
 
     def _save_preset(self, preset_name):
-        """Save current configuration as a preset"""
         try:
             self._ensure_presets_dir()
+            safe_name = self._sanitize_filename(preset_name)
+            if not safe_name: 
+                raise ValueError("Invalid filename")
+
             preset_data = {
-                "personality": {},
-                "plugin_settings": {},
-                "timestamp": time.time(),
-                "version": "1.0",
+                'personality': {k: v for k, v in self._agent._config['personality'].items() 
+                              if isinstance(v, (int, str, float, bool))},
+                'plugin_settings': {k: v for k, v in self.options.items() 
+                                  if isinstance(v, (int, str, float, bool))},
+                'timestamp': time.time()
             }
-
-            # Save personality settings
-            for param in self._agent._config["personality"]:
-                if type(self._agent._config["personality"][param]) in [
-                    int,
-                    str,
-                    float,
-                    bool,
-                ]:
-                    preset_data["personality"][param] = self._agent._config[
-                        "personality"
-                    ][param]
-
-            # Save plugin settings
-            for param in self.options:
-                if type(self.options[param]) in [int, str, float, bool]:
-                    preset_data["plugin_settings"][param] = self.options[param]
-
-            preset_file = os.path.join(self.presets_dir, f"{preset_name}.json")
-            with open(preset_file, "w") as f:
+            with open(os.path.join(self.presets_dir, f"{safe_name}.json"), 'w') as f:
                 json.dump(preset_data, f, indent=2)
-
-            logging.info(f"Preset '{preset_name}' saved successfully to {preset_file}")
             return True
         except Exception as e:
-            logging.error(f"Error saving preset '{preset_name}': {str(e)}")
+            logging.error(f"[auto-tune] Error saving preset: {e}")
             raise e
 
     def _load_preset(self, preset_name):
-        """Load a preset configuration"""
-        preset_file = os.path.join(self.presets_dir, f"{preset_name}.json")
-        if not os.path.exists(preset_file):
+        safe_name = self._sanitize_filename(preset_name)
+        filepath = os.path.join(self.presets_dir, f"{safe_name}.json")
+
+        if not os.path.exists(filepath):
             return False, "Preset file not found"
 
         try:
-            with open(preset_file, "r") as f:
-                preset_data = json.load(f)
+            with open(filepath, 'r') as f:
+                data = json.load(f)
 
-            changes_made = []
+            changes = []
+            if 'personality' in data:
+                for k, v in data['personality'].items():
+                    if k in self._agent._config['personality']:
+                        if self._agent._config['personality'][k] != v:
+                            self._agent._config['personality'][k] = v
+                            changes.append(f"{k}")
 
-            # Load personality settings
-            if "personality" in preset_data:
-                for param, value in preset_data["personality"].items():
-                    if param in self._agent._config["personality"]:
-                        old_value = self._agent._config["personality"][param]
-                        if old_value != value:
-                            self._agent._config["personality"][param] = value
-                            changes_made.append(
-                                f"personality.{param}: {old_value} -> {value}"
-                            )
+            if 'plugin_settings' in data:
+                for k, v in data['plugin_settings'].items():
+                    if k in self.options:
+                        self.options[k] = v
 
-            # Load plugin settings
-            if "plugin_settings" in preset_data:
-                for param, value in preset_data["plugin_settings"].items():
-                    if param in self.options:
-                        old_value = self.options[param]
-                        if old_value != value:
-                            self.options[param] = value
-                            changes_made.append(
-                                f"plugin.{param}: {old_value} -> {value}"
-                            )
-
-            if changes_made:
-                logging.info(
-                    f"Preset '{preset_name}' loaded with changes: {', '.join(changes_made)}"
-                )
-                return (
-                    True,
-                    f"Preset '{preset_name}' loaded successfully with {len(changes_made)} changes",
-                )
-            else:
-                return True, f"Preset '{preset_name}' loaded (no changes needed)"
-
+            return True, f"Loaded preset '{safe_name}'. Updated: {', '.join(changes)}"
         except Exception as e:
-            logging.error(f"Error loading preset '{preset_name}': {str(e)}")
-            return False, f"Error loading preset: {str(e)}"
+            return False, str(e)
 
     def _delete_preset(self, preset_name):
-        """Delete a preset file"""
         try:
-            self._ensure_presets_dir()
-            preset_file = os.path.join(self.presets_dir, f"{preset_name}.json")
-            if os.path.exists(preset_file):
-                os.remove(preset_file)
-                logging.info(f"Preset '{preset_name}' deleted successfully")
+            safe_name = self._sanitize_filename(preset_name)
+            filepath = os.path.join(self.presets_dir, f"{safe_name}.json")
+            if os.path.exists(filepath):
+                os.remove(filepath)
                 return True
-            else:
-                logging.warning(f"Preset file '{preset_file}' not found for deletion")
-                return False
-        except Exception as e:
-            logging.error(f"Error deleting preset '{preset_name}': {str(e)}")
+            return False
+        except Exception:
             return False
 
+    # --- Statistics Helpers ---
     def incrementChisto(self, stat, channel, count=1):
         if stat not in self._chistos:
             self._chistos[stat] = {-1: 0}
+        self._chistos[stat][channel] = self._chistos[stat].get(channel, 0) + count
 
-        if channel not in self._chistos[stat]:
-            self._chistos[stat][channel] = count
-        else:
-            self._chistos[stat][channel] += count
-
-        # count all actions per channel, to get a full channel list
-        if channel not in self._chistos["_all_actions"]:
-            self._chistos["_all_actions"][channel] = 1
-        else:
-            self._chistos["_all_actions"][channel] += 1
-
-        # track total on channel -1
+        self._chistos['_all_actions'][channel] = self._chistos['_all_actions'].get(channel, 0) + count
         self._chistos[stat][-1] += count
-        self._chistos["_all_actions"][-1] += 1
-
-    def showChistos(
-        self, stats=None, sort_key="_all_actions"
-    ):  # stats is list of specific to show, else all
-        ret = ""
-        if not stats:
-            stats = self._chistos.keys()
-            logging.debug(f"Using keys: {stats!r}")
-        try:
-            if sort_key in self._chistos:
-                channel_order = sorted(
-                    self._chistos[sort_key].items(), key=lambda x: x[1], reverse=True
-                )
-            else:
-                channel_order = self._agent._supported_channels
-            logging.debug(f"Channel Order: {channel_order!r}")
-
-            ret += "<h2>Channel Statistics</h2>\n"
-            ret += "<table border=1 cellspacing=4 cellpadding=4>\n"
-            ret += "<tr><th>Channel</th>"
-            for ch, count in channel_order:
-                if ch == -1:
-                    ret += "<th>All</th>"
-                else:
-                    ret += "<th>%d</th>" % ch
-            ret += "</tr>\n"
-
-            if not stats:
-                ret += "</table>\n"
-                return ret
-
-            for s in stats:
-                if s == sort_key:
-                    ret += f"<tr><th>{s}</th>"
-                else:
-                    ret += f"<tr><td>{s}</td>"
-
-                if s not in self._chistos:
-                    ret += f"<td colspan={len(channel_order)}>No data</td>"
-                else:
-                    chisto = self._chistos[s]
-                    for ch, dummy in channel_order:
-                        if ch in chisto:
-                            ret += f"<td align=right>{chisto[ch]}</td>"
-                        else:
-                            ret += "<td align=center>-</td>"
-                ret += "</tr>\n"
-            ret += "</table>\n"
-
-            return ret
-        except Exception as e:
-            eret = "<h2>Channel Statistics Error</h2>\n"
-            eret += (
-                "<h3>Progress:</h3>\n<pre>%s</pre>\n<h3>Exception dump:</h3>\n<pre>%s</pre>\n"
-                % (html.escape(ret), html.escape(repr(e)))
-            )
-            logging.exception(e)
-            return eret
+        self._chistos['_all_actions'][-1] += count
 
     def normalize(self, name):
-        """
-        Only allow alpha/nums
-        """
-        if not name or name == "":
-            return "EMPTY"
-        if name == "<hidden>":
-            return "HIDDEN"
-        return str.lower("".join(c for c in name if c.isalnum()))
+        if not name: return 'EMPTY'
+        if name == '<hidden>': return 'HIDDEN'
+        return str.lower(''.join(c for c in name if c.isalnum()))
 
-    def showEditForm(self, request):
-        path = (
-            request.path
-            if request.path.endswith("/update")
-            else f"{request.path}/update"
-        )
-
-        ret = f'<form method=post action="{path}">'
-        ret += '<input id="csrf_token" name="csrf_token" type="hidden" value="{{ csrf_token() }}">'
-
-        # Add presets section
-        ret += '<div class="preset-section">'
-        ret += '<h2>Presets! (Use "update" below before saving and after loading.)</h2>'
-        ret += '<table class="preset-table">'
-        ret += '<tr><td style="width: 150px;">Preset Name:</td><td><input type="text" name="preset_name" size="30" placeholder="Enter preset name"></td></tr>'
-        ret += "<tr><td>Available Presets:</td><td>"
-        ret += '<select name="selected_preset" size="1" style="width: 200px;">'
-        ret += '<option value="">Select a preset...</option>'
-        for preset in self._get_preset_files():
-            ret += f'<option value="{preset}">{preset}</option>'
-        ret += "</select></td></tr>"
-        ret += '<tr><td colspan="2" class="preset-buttons">'
-        ret += '<input type="submit" name="save_preset" value="Save Preset" onclick="return validatePresetName();"> '
-        ret += '<input type="submit" name="load_preset" value="Load Preset" onclick="return validatePresetSelection();"> '
-        ret += '<input type="submit" name="delete_preset" value="Delete Preset" onclick="return validatePresetSelection() && confirm(\'Are you sure you want to delete this preset?\');">'
-        ret += "</td></tr>"
-        ret += "</table>"
-        ret += "</div><hr>"
-
-        form_data = request.values.items()
-
-        for secname, sec in [
-            ["Personality", self._agent._config["personality"]],
-            ["AUTO Tune", self._agent._config["main"]["plugins"]["auto-tune"]],
-        ]:
-            ret += f"<h2>{secname} Variables</h2>"
-            ret += "<table>\n"
-            ret += "<tr align=left><th>Parameter</th><th>Value</th><th>Description</th></tr>\n"
-
-            for p in sorted(sec):
-                if type(sec[p]) in [int, str, float, bool]:
-                    cls = type(sec[p]).__name__
-                    iname = f"newval,{sec[p]},{p},{cls}"
-                    ret += "<tr align=left>"
-                    if cls == "bool":
-                        ret += f'<th>{p}</th><td style="white-space:nowrap; vertical-align:top;">'
-                        checked = " checked" if sec[p] else ""
-                        ret += (
-                            '<input type=radio id="%s" name="%s" value="%s" %s>&nbsp;True<br>'
-                            % (iname, iname, "True", checked)
-                        )
-                        checked = " checked" if not sec[p] else ""
-                        ret += (
-                            '<input type=radio id="%s" name="%s" value="%s" %s>&nbsp;False'
-                            % (iname, iname, "False", checked)
-                        )
-                        ret += "</td>"
-                    else:
-                        ret += f"<th>{p}</th>"
-                        ret += (
-                            '<td><input type=text id="%s" name="%s" size="5" value="%s"></td>'
-                            % (iname, iname, sec[p])
-                        )
-                        # ret += '<tr><th>%s</th>' % ("" if p not in self.descriptions else self.descriptions[p])
-                    if p in self.descriptions:
-                        ret += f"<td>{self.descriptions[p]}</td>"
-                    ret += "</tr>\n"
-                else:
-                    ret += f"<tr align=left><th>{p}</th><td>{sec[p]!r}</td><td><i>uneditable</i></tr>"
-            ret += "</table>"
-        ret += '<input type=submit name=submit value="update"></form><p>'
-        return ret
-
-    def showHistogram(self):
-        ret = ""
-        histo = self._histogram
-        nloops = int(histo["loops"])
-        if nloops > 0:
-            ret += f"<h2>APs per Channel over {nloops} epochs</h2>"
-            ret += "<table border=1 spacing=4 cellspacing=1>"
-            chans = "<tr><th>Channel</th>"
-            totals = "<tr><th>APs seen</th>"
-            vals = "<tr><th>Avg APs/epoch</th>"
-
-            for ch, count in sorted(histo.items(), key=lambda x: x[1], reverse=True):
-                if ch == "loops":
-                    pass
-                else:
-                    weight = float(count) / nloops
-                    # ret +="<tr><th>%d</th><td>%0.2f</td>" % (ch, count)
-                    chans += f"<th>{ch}</th>"
-                    totals += "<td align=right>%d</td>" % count
-                    vals += f"<td align=right>{weight:0.1f}</td>"
-            chans += "</tr>"
-            totals += "</tr>"
-            vals += "</tr>"
-            ret += chans + totals + vals
-            ret += "</table>"
-        else:
-            ret += "<h2>No channel data collected yet</h2>"
-
-        return ret
-
-    def showInteractions(self):
-        ret = ""
-        numHidden = 0
-        numVisible = 0
-        if self._agent:
-            now = time.time()
-            ret += "<h2>Interactions per endpoint</h2>"
-            ret += "<p><b>Encounters</b> is how many different times this AP has been seen, then not seen, then seen again. Interactions should be the sum of assoc and deauth attacks. All are per session stats. <b>Age</b> is seconds since AP was last seen by the plugin.</p>"
-            ret += "<table border=1 spacing=4 cellspacing=4 cellpadding=4>"
-            ret += "<tr><th>Hostname</th><th>MAC</th><th>Channel</th><th>Age</th><th>RSSI</th><th>Encounters</th><th>Associates</th><th>Deauths</th><th>Handshakes</th><th>Interactions</th></tr>"
-            for id, ap in sorted(
-                self._known_aps.items(), key=lambda x: x[1]["AT_lastseen"], reverse=True
-            ):
-                lmac = ap["mac"].lower()
-                if ap["hostname"] == "<hidden>" and not self.options["show_hidden"]:
-                    logging.debug(f"Skipping {ap['hostname']} '{lmac}'")
-                    numHidden += 1
-                    continue  # skip hidden APs
-                elif ap["hostname"] == "" and not self.options["show_hidden"]:
-                    logging.debug(f"Skipping no-name {ap['hostname']} '{lmac}'")
-                    numHidden += 1
-                    continue  # skip hidden APs
-                elif ap["hostname"] is None and not self.options["show_hidden"]:
-                    logging.debug(f"Skipping None {ap['hostname']} '{lmac}'")
-                    numHidden += 1
-                    continue  # skip hidden APs
-                else:
-                    numVisible += 1
-                    logging.debug(f"Not skipping '{ap['hostname']}'")
-                if ap["AT_visible"]:
-                    ret += f"<tr><td>{html.escape(ap['hostname'])}</td>"
-                else:
-                    ret += "<tr><td><i>%s</i></td>" % html.escape(
-                        ap["hostname"]
-                    )  # italicise hosts not currently visible
-                ret += f"<td>{ap['mac']}</td><td>{ap['channel']}</td>"
-                ret += f"<td>{int(now - ap['AT_lastseen'])}</td>"  # time since last interaction
-                ret += f"<td>{ap['rssi']}</td>"
-                for t in ["seen", "assoc", "deauth", "handshake"]:
-                    tag = "AT_" + t
-                    if tag in ap:
-                        ret += f"<td>{ap[tag]}</td>"
-                    else:
-                        ret += "<td></td>"
-                if lmac in self._agent._history:
-                    ret += f"<td>{self._agent._history[lmac]}</td>"
-                else:
-                    ret += "<td>no attacks yet</td>"
-                ret += "</tr>\n"
-            #            for (mac, count) in sorted(self._agent._history.items(), key=lambda x:x[1], reverse = True):
-            #                ret += "<tr><td>%s</td><td>%s</td><td></td><td>%s</td></tr>" % (mac, mac, count)
-            ret += "</table>\n"
-            if numHidden:
-                ret += f"{numVisible} visible, {numHidden} hidden networks<p>"
-
-        return ret
-
-    def update_parameter(self, cfg, parameter, vtype, val, ret):
-        changed = False
-        if parameter in cfg:
-            old_val = cfg[parameter]
-
-            if val == old_val:
-                pass
-            elif vtype == "int":
-                cfg[parameter] = int(val)
-                changed = True
-            elif vtype == "float":
-                cfg[parameter] = float(val)
-                ret += f"Updated float {parameter}: {old_val} -> {val}<br>\n"
-                changed = True
-            elif vtype == "bool":
-                cfg[parameter] = bool(val == "True")
-                ret += f"Updated boolean {parameter}: {old_val} -> {val}<br>\n"
-                changed = True
-            elif vtype == "str":
-                cfg[parameter] = val
-                ret += f"Updated string {parameter}: {old_val} -> {val}<br>\n"
-                changed = True
-            else:
-                ret += f"No update {parameter} ({type}): {old_val} -> {val}<br>\n"
-
-        return changed
-
-    # called when http://<host>:<port>/plugins/<plugin>/ is called
-    # must return a html page
-    # IMPORTANT: If you use "POST"s, add a csrf-token (via csrf_token() and render_template_string)
-    def on_webhook(self, path, request):
-        # display personality parameters for editing
-        # show statistic per channel, etc
-        if not self._agent:
-            ret = "<html><head><title>AUTO Tune not ready</title></head><body><h1>AUTO Tune not ready</h1></body></html>"
-            return render_template_string(ret)
-
-        try:
-            if request.method == "GET":
-                if path == "/" or not path:
-                    logging.debug("webhook called")
-                    ret = '<html><head><title>AUTO Tune</title><meta name="csrf_token" content="{{ csrf_token() }}"></head>'
-                    ret += "<style>"
-                    ret += ".preset-section { background-color: #f0f0f0; padding: 10px; margin: 10px 0; border-radius: 5px; }"
-                    ret += ".preset-table { width: 100%; }"
-                    ret += ".preset-table td { padding: 5px; }"
-                    ret += ".preset-buttons { margin-top: 10px; }"
-                    ret += ".preset-buttons input { margin-right: 10px; padding: 5px 10px; }"
-                    ret += ".success { color: green; font-weight: bold; padding: 10px; background-color: #d4edda; border: 1px solid #c3e6cb; border-radius: 3px; }"
-                    ret += ".error { color: red; font-weight: bold; padding: 10px; background-color: #f8d7da; border: 1px solid #f5c6cb; border-radius: 3px; }"
-                    ret += "</style>"
-                    ret += "<script>"
-                    ret += "function validatePresetName() {"
-                    ret += '  var presetName = document.getElementsByName("preset_name")[0].value.trim();'
-                    ret += '  if (presetName === "") {'
-                    ret += '    alert("Please enter a preset name");'
-                    ret += "    return false;"
-                    ret += "  }"
-                    ret += "  return true;"
-                    ret += "}"
-                    ret += "function validatePresetSelection() {"
-                    ret += '  var selectedPreset = document.getElementsByName("selected_preset")[0].value;'
-                    ret += '  if (selectedPreset === "") {'
-                    ret += '    alert("Please select a preset");'
-                    ret += "    return false;"
-                    ret += "  }"
-                    ret += "  return true;"
-                    ret += "}"
-                    ret += "</script>"
-                    ret += "<body><h1>AUTO Tune</h1><p>"
-                    ret += self.showEditForm(request)
-
-                    ret += self.showHistogram()
-                    ret += self.showChistos()
-                    if (
-                        "show_interactions" in self.options
-                        and self.options["show_interactions"]
-                    ):
-                        ret += self.showInteractions()
-                    ret += "</body></html>"
-                    return render_template_string(ret)
-                # other paths here
-            elif request.method == "POST":
-                ret = '<html><head><title>AUTO Tune</title><meta name="csrf_token" content="{{ csrf_token() }}"></head>'
-                if path == "update":  # update settings that changed, save to json file
-                    ret = '<html><head><title>AUTO Tune Update!</title><meta name="csrf_token" content="{{ csrf_token() }}"></head>'
-                    ret += "<body><h1>AUTO Tune Update</h1>"
-
-                    # Handle preset operations
-                    if (
-                        "save_preset" in request.values
-                        and "preset_name" in request.values
-                    ):
-                        preset_name = request.values["preset_name"].strip()
-                        if preset_name:
-                            try:
-                                self._save_preset(preset_name)
-                                ret += f"<div class='success'>Preset '{preset_name}' saved successfully!</div>"
-                            except Exception as e:
-                                ret += f"<div class='error'>Error saving preset: {e!s}</div>"
-                        else:
-                            ret += "<div class='error'>Please enter a preset name</div>"
-
-                    elif (
-                        "load_preset" in request.values
-                        and "selected_preset" in request.values
-                    ):
-                        preset_name = request.values["selected_preset"]
-                        if preset_name:
-                            success, message = self._load_preset(preset_name)
-                            if success:
-                                ret += f"<div class='success'>{message}</div>"
-                                save_config(
-                                    self._agent._config, "/etc/pwnagotchi/config.toml"
-                                )
-                            else:
-                                ret += f"<div class='error'>{message}</div>"
-                        else:
-                            ret += "<div class='error'>Please select a preset to load</div>"
-
-                    elif (
-                        "delete_preset" in request.values
-                        and "selected_preset" in request.values
-                    ):
-                        preset_name = request.values["selected_preset"]
-                        if preset_name:
-                            if self._delete_preset(preset_name):
-                                ret += f"<div class='success'>Preset '{preset_name}' deleted successfully!</div>"
-                            else:
-                                ret += f"<div class='error'>Error deleting preset '{preset_name}'</div>"
-                        else:
-                            ret += "<div class='error'>Please select a preset to delete</div>"
-
-                    ret += "<h2>Processing changes</h2><ul>"
-                    changed = False
-                    for key, val in request.values.items():
-                        if key != "":
-                            # ret += "%s -> %s<br>\n" % (key,val)
-                            try:
-                                if key.startswith("newval,"):
-                                    tag, value, parameter, vtype = key.split(",", 4)
-                                    if value == val:
-                                        logging.debug("Skip unchanged value")
-                                        continue
-
-                                    if parameter in self._agent._config["personality"]:
-                                        logging.debug("Personality update")
-                                        chg = self.update_parameter(
-                                            self._agent._config["personality"],
-                                            parameter,
-                                            vtype,
-                                            val,
-                                            ret,
-                                        )
-                                    elif parameter in self.options:
-                                        logging.debug("plugin settings update")
-                                        chg = self.update_parameter(
-                                            self.options, parameter, vtype, val, ret
-                                        )
-                                    else:
-                                        ret += f"<li><b>Skipping unknown {key}</b> -> {val}\n"
-                                    if chg:
-                                        ret += f"<li>{parameter}: {value} -> {val}\n"
-                                    changed = changed or chg
-                                else:
-                                    pass  # ret += "No update %s -> %s<br>\n" % (key, val)
-                            except Exception as e:
-                                ret += f"</code><h2>Error</h2><pre>{e!r}</pre><p><code>"
-                                logging.exception(e)
-                    ret += "</ul>"
-                    if changed:
-                        save_config(self._agent._config, "/etc/pwnagotchi/config.toml")
-                    ret += self.showEditForm(request)
-                    ret += self.showHistogram()
-                    ret += self.showChistos()
-                    ret += "</body></html>"
-                else:
-                    ret += "<body><h1>Unknown request</h1>"
-                    ret += f'<img src="/ui?{int(time.time())}">'
-                    ret += f"<h2>Path</h2><code>{path!r}</code><p>"
-                    ret += f"<h2>Request</h2><code>{request.values!r}</code><p>"
-                    ret += "</body></html>"
-                return render_template_string(ret)
-        except Exception as e:
-            ret = "<html><head><title>AUTO Tune error</title></head>"
-            ret += f"<body><h1>{e!r}</h1></body></html>"
-            logging.exception(f"AUTO Tune error: {e!r}")
-            return render_template_string(ret)
-
-    # called when the plugin is loaded
+    # --- Core Pwnagotchi Handlers ---
     def on_loaded(self):
-        try:
-            defaults = {
-                "show_hidden": False,
-                "reset_history": True,
-                "extra_channels": 15,
-                "show_interactions": False,
-            }
-
-            for d in defaults:
-                if d not in self.options:
-                    self.options[d] = defaults[d]
-        except Exception as e:
-            logging.exception(e)
+        defaults = {
+            'show_hidden': False,
+            'reset_history': True,
+            'extra_channels': 3,
+            'show_interactions': False
+        }
+        for k, v in defaults.items():
+            if k not in self.options:
+                self.options[k] = v
 
     def on_ready(self, agent):
         self._agent = agent
-        if self.options["reset_history"]:
-            self._agent._history = {}  # clear "max_interactions" data
-            self._agent.run("wifi.recon clear")
-            self._agent.run("wifi.clear")
+        if self.options['reset_history']:
+            try:
+                self._agent._history = {}
+                # Check for existence of 'run' method for safety
+                if hasattr(self._agent, 'run'):
+                    self._agent.run("wifi.recon clear")
+                    self._agent.run("wifi.clear")
+                    channels = agent._config['personality'].get('channels', [1, 6, 11])
+                    self._agent.run(f"wifi.recon.channel {','.join(map(str, channels))}")
+            except Exception as e:
+                logging.warning(f"[auto-tune] Error resetting history: {e}")
 
-    # called when the agent refreshed its access points list
+        if agent._config.get('ai', {}).get('enabled', False):
+            logging.warning("[auto-tune] AI is enabled! AutoTune will remain passive.")
+        else:
+            logging.info("[auto-tune] AI disabled. AutoTune taking control.")
+
+    def on_epoch(self, agent, epoch, epoch_data):
+        if agent._config.get('ai', {}).get('enabled', False):
+            return
+
+        self.ep_data = epoch_data
+        self.ep_data['epoch'] = epoch
+
+        try:
+            next_channels = self._active_channels.copy()
+            n = self.options.get("extra_channels", 3)
+
+            # Refill unscanned list if empty
+            if not self._unscanned_channels:
+                if "restrict_channels" in self.options:
+                    self._unscanned_channels = self.options["restrict_channels"].copy()
+                elif hasattr(agent, "_allowed_channels"):
+                    self._unscanned_channels = agent._allowed_channels.copy()
+                elif hasattr(agent, "_supported_channels"):
+                    self._unscanned_channels = agent._supported_channels.copy()
+                else:
+                    self._unscanned_channels = pwnagotchi.utils.iface_channels(agent._config['main']['iface'])
+
+            # Safety check: ensure we actually have channels to pick from
+            if self._unscanned_channels:
+                # Pick N random channels
+                for _ in range(n):
+                    if not self._unscanned_channels: break # Stop if we run out
+                    ch = random.choice(list(self._unscanned_channels))
+                    self._unscanned_channels.remove(ch)
+                    if ch not in next_channels:
+                        next_channels.append(ch)
+
+            # Only update if we have valid channels
+            if next_channels:
+                agent._config['personality']['channels'] = next_channels
+                logging.debug(f"[auto-tune] Next Channels: {next_channels}")
+
+        except Exception as e:
+            logging.exception(f"[auto-tune] Epoch error: {e}")
+
     def on_wifi_update(self, agent, access_points):
-        # check aps and update active channels
         try:
             active_channels = []
-            self._histogram["loops"] = self._histogram["loops"] + 1
+            self._histogram["loops"] = self._histogram.get("loops", 0) + 1
+
+            for ap in self._known_aps.values():
+                ap['AT_visible'] = False
+
             for ap in access_points:
-                self.markAPSeen(ap, "wifi_update")
-                ch = ap["channel"]
-                logging.debug("%s %d" % (ap["hostname"], ch))
+                self.markAPSeen(ap, 'wifi_update')
+                ch = ap['channel']
+                if ch < 0: continue
+
                 if ch not in active_channels:
                     active_channels.append(ch)
                     if ch in self._unscanned_channels:
-                        self._unscanned_channels.remove(ch)
-                self._histogram[ch] = (
-                    1 if ch not in self._histogram else self._histogram[ch] + 1
-                )
+                        try:
+                            self._unscanned_channels.remove(ch)
+                        except ValueError:
+                            pass # Channel might have been removed already
+                
+                self._histogram[ch] = self._histogram.get(ch, 0) + 1
 
             self._active_channels = active_channels
-            logging.info(f"Histo: {self._histogram!r}")
         except Exception as e:
-            logging.exception(e)
-
-    # called when the agent refreshed an unfiltered access point list
-    # this list contains all access points that were detected BEFORE filtering
-    # def on_unfiltered_ap_list(self, agent, access_points):
-    #    pass
-
-    # called when an epoch is over (where an epoch is a single loop of the main algorithm)
-    def on_epoch(self, agent, epoch, epoch_data):
-        # pick set of channels for next time
-        try:
-            next_channels = self._active_channels.copy()
-            n = (
-                3
-                if "extra_channels" not in self.options
-                else self.options["extra_channels"]
-            )
-            if len(self._unscanned_channels) == 0:
-                if "restrict_channels" in self.options:
-                    logging.info("Repopulating from restricted list")
-                    self._unscanned_channels = self.options["restrict_channels"].copy()
-                elif hasattr(agent, "_allowed_channels"):
-                    logging.info(
-                        f"Repopulating from allowed list: {agent._allowed_channels}"
-                    )
-                    self._unscanned_channels = agent._allowed_channels.copy()
-                elif hasattr(agent, "_supported_channels"):
-                    logging.info("Repopulating from supported list")
-                    self._unscanned_channels = agent._supported_channels.copy()
-                else:
-                    logging.info("Repopulating unscanned list")
-                    self._unscanned_channels = pwnagotchi.utils.iface_channels(
-                        agent._config["main"]["iface"]
-                    )
-
-            for i in range(n):
-                if len(self._unscanned_channels):
-                    ch = random.choice(list(self._unscanned_channels))
-                    self._unscanned_channels.remove(ch)
-                    next_channels.append(ch)
-            # update live config
-            agent._config["personality"]["channels"] = next_channels
-            logging.info(
-                "Active: %s, Next scan: %s, yet unscanned: %d %s"
-                % (
-                    self._active_channels,
-                    next_channels,
-                    len(self._unscanned_channels),
-                    self._unscanned_channels,
-                )
-            )
-        except Exception as e:
-            logging.exception(e)
+            logging.exception(f"[auto-tune] Wifi update error: {e}")
 
     def markAPSeen(self, access_point, context=None):
         try:
-            apname = self.normalize(access_point["hostname"])
-            apmac = self.normalize(access_point["mac"])
-            apID = apname + "-" + apmac
-            channel = access_point["channel"]
-
-            contextlabel = " on " + context if context else ""
-            tag = "AT_" + context if context else "AT_seen"
+            apname = self.normalize(access_point['hostname'])
+            apmac = self.normalize(access_point['mac'])
+            apID = f"{apname}-{apmac}"
+            channel = access_point['channel']
+            tag = f"AT_{context}" if context else 'AT_seen'
 
             if apID not in self._known_aps:
-                # first time seen this AP
                 self._known_aps[apID] = access_point.copy()
-                self._known_aps[apID]["AT_seen"] = 1
+                self._known_aps[apID]['AT_seen'] = 1
                 self._known_aps[apID][tag] = 1
-                self._known_aps[apID]["AT_visible"] = True
-
-                self.incrementChisto("Unique APs", channel)
-                self.incrementChisto("Current APs", channel)
-
-                logging.info(f"New AP{contextlabel}: {apID}")
+                self._known_aps[apID]['AT_visible'] = True
+                self.incrementChisto('Unique APs', channel)
+                self.incrementChisto('Current APs', channel)
             else:
-                # seen before, merge info
-                for p in access_point:
-                    self._known_aps[apID][p] = access_point[p]
+                self._known_aps[apID].update(access_point)
 
-                # if wasn't visible, increment current count
-                if not self._known_aps[apID]["AT_visible"]:
-                    self._known_aps[apID]["AT_visible"] = True
-                    self._known_aps[apID]["AT_seen"] += 1
-                    self.incrementChisto("Current APs", channel)
+                if not self._known_aps[apID].get('AT_visible', False):
+                    self._known_aps[apID]['AT_visible'] = True
+                    self._known_aps[apID]['AT_seen'] = self._known_aps[apID].get('AT_seen', 0) + 1
+                    self.incrementChisto('Current APs', channel)
 
-                # increment context count in the AP data
-                self._known_aps[apID][tag] = (
-                    1
-                    if tag not in self._known_aps[apID]
-                    else self._known_aps[apID][tag] + 1
-                )
-                if not context:
-                    logging.info(f"Returning AP: {apID}")
+                self._known_aps[apID][tag] = self._known_aps[apID].get(tag, 0) + 1
 
-            self._known_aps[apID]["AT_lastseen"] = time.time()
+            self._known_aps[apID]['AT_lastseen'] = time.time()
             return True
-        except Exception as e:
-            logging.exception(e)
+        except Exception:
             return False
 
-    # called when the agent is sending an association frame
-    def on_association(self, agent, access_point):
+    # --- UI & Display Handlers ---
+    def on_ui_setup(self, ui):
+        self._ui = ui
+        self._orig_mode = ui.get('mode')
+        if self._orig_mode != 'MANU':
+            ui.set('mode', 'AT')
+
+        # Safe state access
         try:
-            self.incrementChisto("Associations", access_point["channel"])
-            self.markAPSeen(access_point, "assoc")
+            if hasattr(ui, '_state') and hasattr(ui._state._state.get('mode'), 'set_click_url'):
+                ui._state._state['mode'].set_click_url('/plugins/auto_tune')
+        except Exception:
+            pass
 
-        except Exception as e:
-            logging.exception(e)
+    def on_ui_update(self, ui):
+        if self._orig_mode == 'MANU': return
 
-    # called when the agent is deauthenticating a client station from an AP
-    def on_deauthentication(self, agent, access_point, client_station):
-        try:
-            self.incrementChisto("Deauths", access_point["channel"])
-            self.markAPSeen(access_point, "deauth")
+        # Update Mode Indicator
+        mode = f"E{self.ep_data.get('epoch', 'ST')}|{int(self.ep_data.get('duration_secs', 0))}s"
+        ui.set('mode', mode)
 
-        except Exception as e:
-            logging.exception(e)
-
-    # callend when the agent is tuning on a specific channel
-    def on_channel_hop(self, agent, channel):
-        pass
-
-    # called when a new handshake is captured, access_point and client_station are json objects
-    # if the agent could match the BSSIDs to the current list, otherwise they are just the strings of the BSSIDs
-    def on_handshake(self, agent, filename, access_point, client_station):
-        try:
-            self.incrementChisto("Handshakes", access_point["channel"])
-            self.markAPSeen(access_point, "handshake")
-        except Exception as e:
-            logging.exception(e)
-
-    def on_bcap_wifi_ap_new(self, agent, event):
-        try:
-            ap = event["data"]
-            apname = self.normalize(ap["hostname"])
-            apmac = self.normalize(ap["mac"])
-            apID = apname + "-" + apmac
-            channel = ap["channel"]
-
-            self.markAPSeen(ap)
-
-        except Exception as e:
-            logging.exception(repr(e))
-
-    def on_bcap_wifi_ap_lost(self, agent, event):
-        try:
-            ap = event["data"]
-            apname = self.normalize(ap["hostname"])
-            apmac = self.normalize(ap["mac"])
-            apID = apname + "-" + apmac
-            channel = ap["channel"]
-
-            if apID not in self._known_aps:
-                self.incrementChisto("Missed joins", channel)
-                logging.warn(f"Unknown AP '{apID}' seen leaving")
+        # Update Shakes Timer
+        if self._agent and self._agent._last_pwnd:
+            lt = int(time.time() - self.last_shake.get('time', time.time()))
+            if lt >= 3600:
+                time_str = f"@{int(lt/3600)}:{int((lt%3600)/60):02d}"
+            elif lt >= 100:
+                time_str = f"@{int(lt/60)}m{lt%60:02d}"
             else:
-                if not self._known_aps[apID]["AT_visible"]:
-                    self.incrementChisto("Missed rejoins", channel)
-                    logging.warn("AP '%s' already gone", apID)
-                else:
-                    self._known_aps[apID]["AT_visible"] = False
-                    self.incrementChisto("Current APs", channel, -1)
+                time_str = f"@{lt}s"
 
-        except Exception as e:
-            logging.exception(repr(e))
+            # Format: Handshakes / Unique (Last_Pwnd Time_Since)
+            unique_shakes = 0
+            if hasattr(self._agent, '_total_u_shakes'):
+                unique_shakes = self._agent._total_u_shakes
+            elif hasattr(pwnagotchi.utils, 'total_unique_handshakes'):
+                unique_shakes = pwnagotchi.utils.total_unique_handshakes(self._agent._config['bettercap']['handshakes'])
 
-    def on_bcap_wifi_client_new(self, agent, event):
+            # Handle standard list or set for handshakes
+            total_shakes = len(self._agent._handshakes)
+            last_pwnd_clean = str(self._agent._last_pwnd)[:15].strip()
+
+            shakes_display = f"{total_shakes}/{unique_shakes} {last_pwnd_clean} {time_str}"
+            ui.set('shakes', shakes_display)
+
+    def on_unload(self, ui):
+        if self._orig_mode:
+            ui.set('mode', self._orig_mode)
         try:
-            ap = event["data"]["AP"]
-            cl = event["data"]["Client"]
-            apmac = self.normalize(ap["mac"])
-            clmac = self.normalize(cl["mac"])
-            clID = clmac + "-" + apmac
-            channel = ap["channel"]
-        except Exception as e:
-            logging.exception(repr(e))
+            if hasattr(ui, '_state') and hasattr(ui._state._state.get('mode'), 'set_click_url'):
+                ui._state._state['mode'].set_click_url('http://pwnagotchi.org')
+        except Exception:
+            pass
 
-    def on_bcap_wifi_client_lost(self, agent, event):
+    # --- Attack Handlers ---
+    def on_association(self, agent, access_point):
+        self.incrementChisto('Associations', access_point['channel'])
+        self.markAPSeen(access_point, "assoc")
+
+    def on_deauthentication(self, agent, access_point, client_station):
+        self.incrementChisto('Deauths', access_point['channel'])
+        self.markAPSeen(access_point, "deauth")
+
+    def on_handshake(self, agent, filename, access_point, client_station):
+        self.incrementChisto('Handshakes', access_point['channel'])
+        self.markAPSeen(access_point, "handshake")
+        self.last_shake = {'time': time.time(), 'ap': access_point, 'cl': client_station}
+
+    # --- Web UI Helpers ---
+    def update_parameter(self, cfg, parameter, vtype, val):
+        if parameter not in cfg: return False
+        
+        old_val = cfg[parameter]
         try:
-            ap = event["data"]["AP"]
-            cl = event["data"]["Client"]
-        except Exception as e:
-            logging.exception(repr(e))
+            if vtype == "int": new_val = int(val)
+            elif vtype == "float": new_val = float(val)
+            elif vtype == "bool": new_val = (str(val).lower() == "true")
+            else: new_val = str(val)
+        except ValueError:
+            return False
+        
+        if old_val != new_val:
+            cfg[parameter] = new_val
+            return True
+        return False
+
+    # --- Webhook Handler ---
+    def on_webhook(self, path, request):
+        if not self._agent:
+            return "<html><body><h1>Agent not ready</h1></body></html>"
+
+        # HTML Template stored separate for cleanliness
+        # Note: We use Jinja2 safe constructs now instead of f-strings for HTML
+        HTML_TEMPLATE = """
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>AutoTune</title>
+            <style>
+                body { font-family: sans-serif; padding: 20px; }
+                .preset-box { background: #f4f4f4; padding: 15px; border-radius: 5px; margin-bottom: 20px; border: 1px solid #ddd; }
+                .msg-success { color: green; background: #e8f5e9; padding: 10px; border: 1px solid green; margin: 10px 0; }
+                .msg-error { color: red; background: #ffebee; padding: 10px; border: 1px solid red; margin: 10px 0; }
+                table { border-collapse: collapse; width: 100%; margin-bottom: 20px; }
+                th { text-align: left; padding: 8px; background: #eee; border: 1px solid #ddd; }
+                td { padding: 8px; border: 1px solid #ddd; }
+                input[type=text] { padding: 4px; }
+                .section-header { margin-top: 30px; border-bottom: 2px solid #ccc; }
+            </style>
+        </head>
+        <body>
+            <h1>AutoTune Control</h1>
+            
+            {% if message %}
+                <div class="{{ msg_class }}">{{ message }}</div>
+            {% endif %}
+
+            <form method="post" action="{{ request.path }}">
+                <input id="csrf_token" name="csrf_token" type="hidden" value="{{ csrf_token() }}">
+                
+                <div class="preset-box">
+                    <h3>Preset Management</h3>
+                    <table>
+                        <tr>
+                            <td>Name:</td>
+                            <td><input type="text" name="preset_name" placeholder="Preset Name"></td>
+                            <td><input type="submit" name="save_preset" value="Save Current Config"></td>
+                        </tr>
+                        <tr>
+                            <td>Load/Delete:</td>
+                            <td>
+                                <select name="selected_preset">
+                                    <option value="">Select Preset...</option>
+                                    {% for p in presets %}
+                                        <option value="{{ p }}">{{ p }}</option>
+                                    {% endfor %}
+                                </select>
+                            </td>
+                            <td>
+                                <input type="submit" name="load_preset" value="Load">
+                                <input type="submit" name="delete_preset" value="Delete" onclick="return confirm('Are you sure?')">
+                            </td>
+                        </tr>
+                    </table>
+                </div>
+
+                {% for title, data_dict in sections %}
+                    <h2 class="section-header">{{ title }}</h2>
+                    <table>
+                        <tr><th>Param</th><th>Value</th><th>Description</th></tr>
+                        {% for key, val in data_dict.items()|sort %}
+                            <tr>
+                                <th>{{ key }}</th>
+                                <td>
+                                    {% set iname = "newval," ~ val ~ "," ~ key ~ "," ~ val|to_type %}
+                                    {% if val is boolean %}
+                                        <input type="radio" name="{{ iname }}" value="True" {% if val %}checked{% endif %}> True
+                                        <input type="radio" name="{{ iname }}" value="False" {% if not val %}checked{% endif %}> False
+                                    {% else %}
+                                        <input type="text" name="{{ iname }}" value="{{ val }}" size="10">
+                                    {% endif %}
+                                </td>
+                                <td>{{ descriptions.get(key, '') }}</td>
+                            </tr>
+                        {% endfor %}
+                    </table>
+                {% endfor %}
+
+                <br><input type="submit" name="update_params" value="Update Configuration">
+            </form>
+
+            <h2>Channel Statistics</h2>
+            <table>
+                <tr>
+                    <th>Channel</th>
+                    {% for ch in channels %}
+                        <th>{{ ch if ch != -1 else 'All' }}</th>
+                    {% endfor %}
+                </tr>
+                {% for stat, data in chistos.items() %}
+                    <tr>
+                        <th>{{ stat }}</th>
+                        {% for ch in channels %}
+                            <td align="right">{{ data.get(ch, '-') }}</td>
+                        {% endfor %}
+                    </tr>
+                {% endfor %}
+            </table>
+        </body>
+        </html>
+        """
+
+        # Custom filter for Jinja to get type name
+        def to_type(value):
+            return type(value).__name__
+
+        message = ""
+        msg_class = ""
+
+        if request.method == "POST":
+            if 'save_preset' in request.values:
+                name = request.values.get('preset_name')
+                if name:
+                    try:
+                        self._save_preset(name)
+                        message = f"Saved preset: {html.escape(name)}"
+                        msg_class = "msg-success"
+                    except Exception as e:
+                        message = f"Error saving: {e}"
+                        msg_class = "msg-error"
+            
+            elif 'load_preset' in request.values:
+                name = request.values.get('selected_preset')
+                if name:
+                    success, msg = self._load_preset(name)
+                    message = msg
+                    msg_class = "msg-success" if success else "msg-error"
+                    if success: save_config(self._agent._config, "/etc/pwnagotchi/config.toml")
+
+            elif 'delete_preset' in request.values:
+                name = request.values.get('selected_preset')
+                if name and self._delete_preset(name):
+                    message = f"Deleted preset: {html.escape(name)}"
+                    msg_class = "msg-success"
+
+            # Handle Params
+            changed = False
+            for key, val in request.values.items():
+                if key.startswith('newval,'):
+                    try:
+                        parts = key.split(',', 3)
+                        if len(parts) == 4:
+                            _, _, param, vtype = parts
+
+                            if param in self._agent._config['personality']:
+                                if self.update_parameter(self._agent._config['personality'], param, vtype, val):
+                                    changed = True
+                            elif param in self.options:
+                                if self.update_parameter(self.options, param, vtype, val):
+                                    changed = True
+                    except Exception as e:
+                        logging.error(f"[auto-tune] Param update error: {e}")
+
+            if changed:
+                save_config(self._agent._config, "/etc/pwnagotchi/config.toml")
+                if not message:
+                    message = "Configuration updated and saved."
+                    msg_class = "msg-success"
+
+        # Prepare data for template
+        sorted_channels = sorted([k for k in self._chistos['_all_actions'].keys()], 
+                               key=lambda x: self._chistos['_all_actions'][x], reverse=True)
+        
+        sections = [
+            ("Personality", {k: v for k, v in self._agent._config['personality'].items() 
+                           if isinstance(v, (int, str, float, bool))}),
+            ("Plugin Options", self.options)
+        ]
+
+        # Use Jinja2 environment correctly to prevent XSS and SSTI
+        return render_template_string(HTML_TEMPLATE, 
+                                    request=request,
+                                    message=message,
+                                    msg_class=msg_class,
+                                    presets=self._get_preset_files(),
+                                    sections=sections,
+                                    descriptions=self.descriptions,
+                                    chistos=self._chistos,
+                                    channels=sorted_channels,
+                                    to_type=to_type)

@@ -1,12 +1,12 @@
 import os
+import time
 import logging
 import threading
-from time import sleep
 from datetime import datetime, timedelta
-from pwnagotchi import plugins
+
+from flask import render_template_string, jsonify
+import pwnagotchi.plugins as plugins
 from pwnagotchi.utils import StatusFile
-from flask import render_template_string
-from flask import jsonify
 
 TEMPLATE = """
 {% extends "base.html" %}
@@ -136,7 +136,6 @@ TEMPLATE = """
         loadData('/plugins/session-stats/epoch' + '?session=' + session, 'chart_epoch', 'Epochs', false)
     }
 
-
     loadSessionFiles();
     loadSessionData();
     setInterval(loadSessionData, 60000);
@@ -158,114 +157,128 @@ TEMPLATE = """
 
 
 class GhettoClock:
+    """
+    A clock that tracks time relative to plugin start.
+    Useful for systems without an RTC to ensure graphs progress linearly
+    even if the system time jumps.
+    Replaces original threaded counter with efficient monotonic math.
+    """
     def __init__(self):
-        self.lock = threading.Lock()
-        self._track = datetime.now()
-        self._counter_thread = threading.Thread(target=self.counter)
-        self._counter_thread.daemon = True
-        self._counter_thread.start()
-
-    def counter(self):
-        while True:
-            with self.lock:
-                self._track += timedelta(seconds=1)
-            sleep(1)
+        self._start_time = datetime.now()
+        self._start_mono = time.monotonic()
 
     def now(self):
-        with self.lock:
-            return self._track
+        elapsed = time.monotonic() - self._start_mono
+        return self._start_time + timedelta(seconds=elapsed)
 
 
 class SessionStats(plugins.Plugin):
-    __author__ = "33197631+dadav@users.noreply.github.com"
+    __author__ = 'dadav'
     __version__ = "0.1.0"
-    __license__ = "GPL3"
-    __description__ = "This plugin displays stats of the current session."
+    __license__ = 'GPL3'
+    __description__ = 'This plugin displays stats of the current session.'
+    __defaults__ = {
+        'save_directory': '/root/sessions'
+    }
 
     def __init__(self):
         self.lock = threading.Lock()
         self.options = dict()
         self.stats = dict()
         self.clock = GhettoClock()
+        self.session = None
+        self.session_name = None
 
     def on_loaded(self):
         """
         Gets called when the plugin gets loaded
         """
-        # this has to happen in "loaded" because the options are not yet
-        # available in the __init__
-        os.makedirs(self.options["save_directory"], exist_ok=True)
-        self.session_name = f"stats_{self.clock.now().strftime('%Y_%m_%d_%H_%M')}.json"
-        self.session = StatusFile(
-            os.path.join(self.options["save_directory"], self.session_name),
-            data_format="json",
-        )
-        logging.info("Session-stats plugin loaded.")
+        save_dir = self.options['save_directory']
+        if not os.path.exists(save_dir):
+            try:
+                os.makedirs(save_dir, exist_ok=True)
+            except OSError as e:
+                logging.error(f"[session-stats] Failed to create directory {save_dir}: {e}")
+                return
+
+        timestamp = self.clock.now().strftime("%Y_%m_%d_%H_%M")
+        self.session_name = f"stats_{timestamp}.json"
+        session_path = os.path.join(save_dir, self.session_name)
+        
+        self.session = StatusFile(session_path, data_format='json')
+        logging.info("[session-stats] Plugin loaded.")
 
     def on_epoch(self, agent, epoch, epoch_data):
         """
         Save the epoch_data to self.stats
         """
+        if not self.session:
+            return
+
         with self.lock:
-            self.stats[self.clock.now().strftime("%H:%M:%S")] = epoch_data
-            self.session.update(data={"data": self.stats})
+            current_time = self.clock.now().strftime("%H:%M:%S")
+            self.stats[current_time] = epoch_data
+            self.session.update(data={'data': self.stats})
 
     @staticmethod
     def extract_key_values(data, subkeys):
         result = dict()
-        result["values"] = list()
-        result["labels"] = subkeys
+        result['values'] = list()
+        result['labels'] = subkeys
         for plot_key in subkeys:
-            v = [[ts, d[plot_key]] for ts, d in data.items()]
-            result["values"].append(v)
+            # Handle cases where key might be missing in older data
+            v = [[ts, d.get(plot_key, 0)] for ts, d in data.items()]
+            result['values'].append(v)
         return result
 
     def on_webhook(self, path, request):
         if not path or path == "/":
             return render_template_string(TEMPLATE)
 
-        session_param = request.args.get("session")
+        session_param = request.args.get('session')
+        extract_keys = []
 
         if path == "os":
-            extract_keys = [
-                "cpu_load",
-                "mem_usage",
-            ]
+            extract_keys = ['cpu_load', 'mem_usage']
         elif path == "temp":
-            extract_keys = ["temperature"]
+            extract_keys = ['temperature']
         elif path == "wifi":
             extract_keys = [
-                "missed_interactions",
-                "num_hops",
-                "num_peers",
-                "tot_bond",
-                "avg_bond",
-                "num_deauths",
-                "num_associations",
-                "num_handshakes",
+                'missed_interactions',
+                'num_hops',
+                'num_peers',
+                'tot_bond',
+                'avg_bond',
+                'num_deauths',
+                'num_associations',
+                'num_handshakes',
             ]
         elif path == "duration":
             extract_keys = [
-                "duration_secs",
-                "slept_for_secs",
+                'duration_secs',
+                'slept_for_secs',
             ]
         elif path == "reward":
-            extract_keys = [
-                "reward",
-            ]
+            extract_keys = ['reward']
         elif path == "epoch":
-            extract_keys = [
-                "active_for_epochs",
-            ]
+            extract_keys = ['active_for_epochs']
         elif path == "session":
-            return jsonify({"files": os.listdir(self.options["save_directory"])})
+            try:
+                files = sorted(os.listdir(self.options['save_directory']), reverse=True)
+                return jsonify({'files': files})
+            except FileNotFoundError:
+                return jsonify({'files': []})
 
         with self.lock:
             data = self.stats
-            if session_param and session_param != "Current":
-                file_stats = StatusFile(
-                    os.path.join(self.options["save_directory"], session_param),
-                    data_format="json",
-                )
-                data = file_stats.data_field_or("data", default=dict())
+            # Load historical data if requested
+            if session_param and session_param != 'Current':
+                try:
+                    file_path = os.path.join(self.options['save_directory'], session_param)
+                    if os.path.exists(file_path):
+                        file_stats = StatusFile(file_path, data_format='json')
+                        data = file_stats.data_field_or('data', default=dict())
+                except Exception as e:
+                    logging.error(f"[session-stats] Error loading session {session_param}: {e}")
+            
             return jsonify(SessionStats.extract_key_values(data, extract_keys))

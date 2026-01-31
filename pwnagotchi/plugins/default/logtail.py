@@ -1,9 +1,7 @@
 import logging
 import threading
-from pwnagotchi import plugins
-from flask import render_template_string
-from flask import abort
-from flask import Response
+from flask import render_template_string, Response, abort
+import pwnagotchi.plugins as plugins
 
 TEMPLATE = """
 {% extends "base.html" %}
@@ -51,12 +49,16 @@ TEMPLATE = """
             top: 0;
             display: table;
             width: 100%;
+            background: white; /* Ensure background is opaque */
+            z-index: 100;
         }
         div.sticky > * {
             display: table-cell;
         }
         div.sticky > span {
             width: 1%;
+            white-space: nowrap;
+            padding-left: 10px;
         }
         div.sticky > input {
             width: 100%;
@@ -101,17 +103,28 @@ TEMPLATE = """
     function handleNewData() {
         var messages = xhr.responseText.split('\\n');
         filterVal = filter.value.toUpperCase();
+        
+        // Only process new messages
         messages.slice(position, -1).forEach(function(value) {
+            var msg, time, level, data;
 
             if (value.charAt(0) != '[') {
                 msg = value;
                 time = '';
                 level = '';
+                colorClass = 'default';
             } else {
                 data = value.split(']');
-                time = data.shift() + ']';
-                level = data.shift() + ']';
-                msg = data.join(']');
+                // Basic parsing assuming format [TIME] [LEVEL] MESSAGE
+                if (data.length >= 2) {
+                    time = data.shift() + ']';
+                    level = data.shift() + ']';
+                    msg = data.join(']');
+                } else {
+                    msg = value;
+                    time = '';
+                    level = '';
+                }
 
                 switch(level) {
                     case ' [INFO]':
@@ -156,13 +169,14 @@ TEMPLATE = """
         position = messages.length - 1;
     }
 
-    var scrollingElement = (document.scrollingElement || document.body)
+    var scrollingElement = (document.scrollingElement || document.body);
     function scrollToBottom () {
        scrollingElement.scrollTop = scrollingElement.scrollHeight;
     }
 
     var timer;
     var scrollElm = document.getElementById('autoscroll');
+    
     timer = setInterval(function() {
         handleNewData();
         if (scrollElm.checked) {
@@ -179,19 +193,20 @@ TEMPLATE = """
     filter.onkeyup = function() {
         clearTimeout(typingTimer);
         typingTimer = setTimeout(doneTyping, doneTypingInterval);
-    }
+    };
 
     filter.onkeydown = function() {
         clearTimeout(typingTimer);
-    }
+    };
 
     function doneTyping() {
         document.body.style.cursor = 'progress';
-        var tr, tds, td, i, txtValue;
         filterVal = filter.value.toUpperCase();
-        tr = table.getElementsByTagName("tr");
-        for (i = 1; i < tr.length; i++) {
-            txtValue = tr[i].textContent || tr[i].innerText;
+        var tr = table.getElementsByTagName("tr");
+        
+        // Start from 1 to skip header
+        for (var i = 1; i < tr.length; i++) {
+            var txtValue = tr[i].textContent || tr[i].innerText;
             if (txtValue.toUpperCase().indexOf(filterVal) > -1) {
                 tr[i].style.display = "table-row";
             } else {
@@ -206,19 +221,15 @@ TEMPLATE = """
     <div class="sticky">
         <input type="text" id="filter" placeholder="Search for ..." title="Type in a filter">
         <span><input checked type="checkbox" id="autoscroll"></span>
-        <span><label for="autoscroll"> Autoscroll to bottom</label><br></span>
+        <span><label for="autoscroll"> Autoscroll</label></span>
     </div>
     <table id="table">
         <thead>
-            <th>
-                Time
-            </th>
-            <th>
-                Level
-            </th>
-            <th>
-                Message
-            </th>
+            <tr>
+                <th>Time</th>
+                <th>Level</th>
+                <th>Message</th>
+            </tr>
         </thead>
     </table>
 {% endblock %}
@@ -226,15 +237,19 @@ TEMPLATE = """
 
 
 class Logtail(plugins.Plugin):
-    __author__ = "33197631+dadav@users.noreply.github.com"
-    __version__ = "0.1.0"
-    __license__ = "GPL3"
-    __description__ = "This plugin tails the logfile."
+    __author__ = 'dadav'
+    __version__ = '0.1.1'
+    __license__ = 'GPL3'
+    __description__ = 'This plugin tails the logfile in the web interface.'
+    __defaults__ = {
+        'max-lines': 4096
+    }
 
     def __init__(self):
         self.lock = threading.Lock()
         self.options = dict()
         self.ready = False
+        self.config = None
 
     def on_config_changed(self, config):
         self.config = config
@@ -244,7 +259,7 @@ class Logtail(plugins.Plugin):
         """
         Gets called when the plugin gets loaded
         """
-        logging.info("Logtail plugin loaded.")
+        logging.info("[logtail] Plugin loaded.")
 
     def on_webhook(self, path, request):
         if not self.ready:
@@ -253,14 +268,31 @@ class Logtail(plugins.Plugin):
         if not path or path == "/":
             return render_template_string(TEMPLATE)
 
-        if path == "stream":
-
+        if path == 'stream':
             def generate():
-                with open(self.config["main"]["log"]["path"]) as f:
-                    yield "".join(f.readlines()[-self.options.get("max-lines", 4096) :])
-                    while True:
-                        yield f.readline()
+                log_path = self.config['main']['log']['path']
+                try:
+                    with open(log_path, 'r', encoding='utf-8', errors='ignore') as f:
+                        # Initial read of last N lines
+                        max_lines = self.options.get('max-lines', 4096)
+                        lines = f.readlines()
+                        yield ''.join(lines[-max_lines:])
+                        
+                        # Move to end of file
+                        f.seek(0, 2)
+                        
+                        while True:
+                            line = f.readline()
+                            if line:
+                                yield line
+                            else:
+                                # Small sleep to prevent high CPU usage while waiting for logs
+                                import time
+                                time.sleep(0.1)
+                except Exception as e:
+                    logging.error(f"[logtail] Error reading log: {e}")
+                    yield f"[ERROR] Could not read log file: {e}"
 
-            return Response(generate(), mimetype="text/plain")
+            return Response(generate(), mimetype='text/plain')
 
         abort(404)

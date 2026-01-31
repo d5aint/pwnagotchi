@@ -1,2 +1,5 @@
 *.pyc
 .vscode
+
+pwnagotchi-cstm/build/
+pwnagotchi-cstm/pwnagotchi.egg-info/
