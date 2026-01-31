@@ -35,7 +35,7 @@ from pwnagotchi.ui.hw.libs.waveshare.epaper import epdconfig
 EPD_WIDTH = 800
 EPD_HEIGHT = 480
 
-GRAY1 = 0xff  # white
+GRAY1 = 0xFF  # white
 GRAY2 = 0xC0
 GRAY3 = 0x80  # gray
 GRAY4 = 0x00  # Blackest
@@ -57,24 +57,119 @@ class EPD:
         self.GRAY4 = GRAY4  # Blackest
 
     LUT_DATA_4Gray = [  # #112bytes
-        0x80, 0x48, 0x4A, 0x22, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x0A, 0x48, 0x68, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x88, 0x48, 0x60, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0xA8, 0x48, 0x45, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x07, 0x1E, 0x1C, 0x02, 0x00,
-        0x05, 0x01, 0x05, 0x01, 0x02,
-        0x08, 0x01, 0x01, 0x04, 0x04,
-        0x00, 0x02, 0x00, 0x02, 0x01,
-        0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x00, 0x01,
-        0x22, 0x22, 0x22, 0x22, 0x22,
-        0x17, 0x41, 0xA8, 0x32, 0x30,
-        0x00, 0x00]
+        0x80,
+        0x48,
+        0x4A,
+        0x22,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x0A,
+        0x48,
+        0x68,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x88,
+        0x48,
+        0x60,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0xA8,
+        0x48,
+        0x45,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x07,
+        0x1E,
+        0x1C,
+        0x02,
+        0x00,
+        0x05,
+        0x01,
+        0x05,
+        0x01,
+        0x02,
+        0x08,
+        0x01,
+        0x01,
+        0x04,
+        0x04,
+        0x00,
+        0x02,
+        0x00,
+        0x02,
+        0x01,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x01,
+        0x22,
+        0x22,
+        0x22,
+        0x22,
+        0x22,
+        0x17,
+        0x41,
+        0xA8,
+        0x32,
+        0x30,
+        0x00,
+        0x00,
+    ]
 
     # Hardware reset
     def reset(self):
@@ -106,7 +201,7 @@ class EPD:
     def ReadBusy(self):
         logger.debug("e-Paper busy")
         busy = epdconfig.digital_read(self.busy_pin)
-        while (busy == 1):
+        while busy == 1:
             busy = epdconfig.digital_read(self.busy_pin)
             epdconfig.delay_ms(20)
         epdconfig.delay_ms(20)
@@ -136,14 +231,14 @@ class EPD:
         self.send_command(0x20)  # Activate Display Update Sequence
         self.ReadBusy()
 
-    '''
+    """
     function : Setting the display window
     parameter:
         xstart : X-axis starting position
         ystart : Y-axis starting position
         xend : End position of X-axis
         yend : End position of Y-axis
-    '''
+    """
 
     def SetWindow(self, x_start, y_start, x_end, y_end):
         self.send_command(0x44)  # SET_RAM_X_ADDRESS_START_END_POSITION
@@ -158,12 +253,12 @@ class EPD:
         self.send_data(y_end & 0xFF)
         self.send_data((y_end >> 8) & 0xFF)
 
-    '''
+    """
     function : Set Cursor
     parameter:
         x : X-axis starting position
         y : Y-axis starting position
-    '''
+    """
 
     def SetCursor(self, x, y):
         self.send_command(0x4E)  # SET_RAM_X_ADDRESS_COUNTER
@@ -176,7 +271,7 @@ class EPD:
         self.send_data((y >> 8) & 0xFF)
 
     def init(self):
-        if (epdconfig.module_init() != 0):
+        if epdconfig.module_init() != 0:
             return -1
         # EPD hardware init start
         self.reset()
@@ -215,7 +310,7 @@ class EPD:
         return 0
 
     def init_Fast(self):
-        if (epdconfig.module_init() != 0):
+        if epdconfig.module_init() != 0:
             return -1
         # EPD hardware init start
         self.reset()
@@ -280,7 +375,7 @@ class EPD:
         self.send_data(self.LUT_DATA_4Gray[109])  # 0x1C
 
     def init_4GRAY(self):
-        if (epdconfig.module_init() != 0):
+        if epdconfig.module_init() != 0:
             return -1
         # EPD hardware init start
         self.reset()
@@ -322,7 +417,7 @@ class EPD:
     def getbuffer(self, image):
         # logger.debug("bufsiz = ",int(self.width/8) * self.height)
         buf = [0xFF] * (int(self.width / 8) * self.height)
-        image_monocolor = image.convert('1')
+        image_monocolor = image.convert("1")
         imwidth, imheight = image_monocolor.size
         pixels = image_monocolor.load()
         # logger.debug("imwidth = %d, imheight = %d",imwidth,imheight)
@@ -346,41 +441,47 @@ class EPD:
     def getbuffer_4Gray(self, image):
         # logger.debug("bufsiz = ",int(self.width/8) * self.height)
         buf = [0xFF] * (int(self.width / 4) * self.height)
-        image_monocolor = image.convert('L')
+        image_monocolor = image.convert("L")
         imwidth, imheight = image_monocolor.size
         pixels = image_monocolor.load()
         i = 0
         # logger.debug("imwidth = %d, imheight = %d",imwidth,imheight)
-        if (imwidth == self.width and imheight == self.height):
+        if imwidth == self.width and imheight == self.height:
             logger.debug("Vertical")
             for y in range(imheight):
                 for x in range(imwidth):
                     # Set the bits for the column of pixels at the current position.
-                    if (pixels[x, y] == 0xC0):
+                    if pixels[x, y] == 0xC0:
                         pixels[x, y] = 0x80
-                    elif (pixels[x, y] == 0x80):
+                    elif pixels[x, y] == 0x80:
                         pixels[x, y] = 0x40
                     i = i + 1
-                    if (i % 4 == 0):
+                    if i % 4 == 0:
                         buf[int((x + (y * self.width)) / 4)] = (
-                                    (pixels[x - 3, y] & 0xc0) | (pixels[x - 2, y] & 0xc0) >> 2 | (
-                                        pixels[x - 1, y] & 0xc0) >> 4 | (pixels[x, y] & 0xc0) >> 6)
+                            (pixels[x - 3, y] & 0xC0)
+                            | (pixels[x - 2, y] & 0xC0) >> 2
+                            | (pixels[x - 1, y] & 0xC0) >> 4
+                            | (pixels[x, y] & 0xC0) >> 6
+                        )
 
-        elif (imwidth == self.height and imheight == self.width):
+        elif imwidth == self.height and imheight == self.width:
             logger.debug("Horizontal")
             for x in range(imwidth):
                 for y in range(imheight):
                     newx = y
                     newy = self.height - x - 1
-                    if (pixels[x, y] == 0xC0):
+                    if pixels[x, y] == 0xC0:
                         pixels[x, y] = 0x80
-                    elif (pixels[x, y] == 0x80):
+                    elif pixels[x, y] == 0x80:
                         pixels[x, y] = 0x40
                     i = i + 1
-                    if (i % 4 == 0):
+                    if i % 4 == 0:
                         buf[int((newx + (newy * self.width)) / 4)] = (
-                                    (pixels[x, y - 3] & 0xc0) | (pixels[x, y - 2] & 0xc0) >> 2 | (
-                                        pixels[x, y - 1] & 0xc0) >> 4 | (pixels[x, y] & 0xc0) >> 6)
+                            (pixels[x, y - 3] & 0xC0)
+                            | (pixels[x, y - 2] & 0xC0) >> 2
+                            | (pixels[x, y - 1] & 0xC0) >> 4
+                            | (pixels[x, y] & 0xC0) >> 6
+                        )
         return buf
 
     def display(self, image):
@@ -439,11 +540,11 @@ class EPD:
                 temp1 = image[i * 2 + j]
                 for k in range(0, 2):
                     temp2 = temp1 & 0xC0
-                    if (temp2 == 0xC0):
+                    if temp2 == 0xC0:
                         temp3 |= 0x00
-                    elif (temp2 == 0x00):
+                    elif temp2 == 0x00:
                         temp3 |= 0x01
-                    elif (temp2 == 0x80):
+                    elif temp2 == 0x80:
                         temp3 |= 0x01
                     else:  # 0x40
                         temp3 |= 0x00
@@ -451,15 +552,15 @@ class EPD:
 
                     temp1 <<= 2
                     temp2 = temp1 & 0xC0
-                    if (temp2 == 0xC0):
+                    if temp2 == 0xC0:
                         temp3 |= 0x00
-                    elif (temp2 == 0x00):
+                    elif temp2 == 0x00:
                         temp3 |= 0x01
-                    elif (temp2 == 0x80):
+                    elif temp2 == 0x80:
                         temp3 |= 0x01
                     else:  # 0x40
                         temp3 |= 0x00
-                    if (j != 1 or k != 1):
+                    if j != 1 or k != 1:
                         temp3 <<= 1
                     temp1 <<= 2
             self.send_data(temp3)
@@ -471,11 +572,11 @@ class EPD:
                 temp1 = image[i * 2 + j]
                 for k in range(0, 2):
                     temp2 = temp1 & 0xC0
-                    if (temp2 == 0xC0):
+                    if temp2 == 0xC0:
                         temp3 |= 0x00
-                    elif (temp2 == 0x00):
+                    elif temp2 == 0x00:
                         temp3 |= 0x01
-                    elif (temp2 == 0x80):
+                    elif temp2 == 0x80:
                         temp3 |= 0x00
                     else:  # 0x40
                         temp3 |= 0x01
@@ -483,15 +584,15 @@ class EPD:
 
                     temp1 <<= 2
                     temp2 = temp1 & 0xC0
-                    if (temp2 == 0xC0):
+                    if temp2 == 0xC0:
                         temp3 |= 0x00
-                    elif (temp2 == 0x00):
+                    elif temp2 == 0x00:
                         temp3 |= 0x01
-                    elif (temp2 == 0x80):
+                    elif temp2 == 0x80:
                         temp3 |= 0x00
                     else:  # 0x40
                         temp3 |= 0x01
-                    if (j != 1 or k != 1):
+                    if j != 1 or k != 1:
                         temp3 <<= 1
                     temp1 <<= 2
             self.send_data(temp3)
@@ -513,4 +614,6 @@ class EPD:
 
         epdconfig.delay_ms(2000)
         epdconfig.module_exit()
+
+
 ### END OF FILE ###

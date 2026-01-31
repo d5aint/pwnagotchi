@@ -27,12 +27,11 @@ import time
 import numpy as np
 
 from PIL import Image
-from PIL import ImageDraw
 
 import spidev
 import RPi.GPIO as GPIO
 
-__version__ = '0.0.1'
+__version__ = "0.0.1"
 
 # Constants for interacting with display registers.
 ILI9341_TFTWIDTH = 320
@@ -97,10 +96,21 @@ ILI9341_PWCTR6 = 0xFC
 class ILI9341(object):
     """Representation of an ILI9341 TFT LCD."""
 
-    def __init__(self, port, cs, dc, backlight, rst=None, 
-                 width=ILI9341_TFTWIDTH, height=ILI9341_TFTHEIGHT,
-                 rotation=270, invert=False, spi_speed_hz=64000000, 
-                 offset_left=0, offset_top=0):
+    def __init__(
+        self,
+        port,
+        cs,
+        dc,
+        backlight,
+        rst=None,
+        width=ILI9341_TFTWIDTH,
+        height=ILI9341_TFTHEIGHT,
+        rotation=270,
+        invert=False,
+        spi_speed_hz=64000000,
+        offset_left=0,
+        offset_top=0,
+    ):
         """Create an instance of the display using SPI communication.
         Must provide the GPIO pin number for the D/C pin and the SPI driver.
         Can optionally provide the GPIO pin number for the reset pin as the rst parameter.
@@ -116,7 +126,7 @@ class ILI9341(object):
         """
 
         if rotation not in [0, 90, 180, 270]:
-            raise ValueError("Invalid rotation {}".format(rotation))
+            raise ValueError(f"Invalid rotation {rotation}")
 
         GPIO.setwarnings(False)
         GPIO.setmode(GPIO.BCM)
@@ -153,7 +163,7 @@ class ILI9341(object):
             self.reset()
 
         # Create an image buffer.
-        self.buffer = Image.new('RGB', (width, height))
+        self.buffer = Image.new("RGB", (width, height))
 
         self._init()
 
@@ -170,7 +180,7 @@ class ILI9341(object):
             data = [data & 0xFF]
         # Write data a chunk at a time.
         for start in range(0, len(data), chunk_size):
-            end = min(start+chunk_size, len(data))
+            end = min(start + chunk_size, len(data))
             self._spi.xfer(data[start:end])
 
     def set_backlight(self, value):
@@ -180,11 +190,19 @@ class ILI9341(object):
 
     @property
     def width(self):
-        return self._width if self._rotation == 0 or self._rotation == 180 else self._height
+        return (
+            self._width
+            if self._rotation == 0 or self._rotation == 180
+            else self._height
+        )
 
     @property
     def height(self):
-        return self._height if self._rotation == 0 or self._rotation == 180 else self._width
+        return (
+            self._height
+            if self._rotation == 0 or self._rotation == 180
+            else self._width
+        )
 
     def command(self, data):
         """Write a byte or array of bytes to the display as command data."""
@@ -213,13 +231,13 @@ class ILI9341(object):
         self.data(0x02)
         self.command(0xCF)
         self.data(0x00)
-        self.data(0XC1)
-        self.data(0X30)
+        self.data(0xC1)
+        self.data(0x30)
         self.command(0xED)
         self.data(0x64)
         self.data(0x03)
-        self.data(0X12)
-        self.data(0X81)
+        self.data(0x12)
+        self.data(0x81)
         self.command(0xE8)
         self.data(0x85)
         self.data(0x00)
@@ -235,31 +253,31 @@ class ILI9341(object):
         self.command(0xEA)
         self.data(0x00)
         self.data(0x00)
-        self.command(ILI9341_PWCTR1)    # Power control
-        self.data(0x23)                    # VRH[5:0]
-        self.command(ILI9341_PWCTR2)    # Power control
-        self.data(0x10)                    # SAP[2:0];BT[3:0]
-        self.command(ILI9341_VMCTR1)    # VCM control
-        self.data(0x3e)
+        self.command(ILI9341_PWCTR1)  # Power control
+        self.data(0x23)  # VRH[5:0]
+        self.command(ILI9341_PWCTR2)  # Power control
+        self.data(0x10)  # SAP[2:0];BT[3:0]
+        self.command(ILI9341_VMCTR1)  # VCM control
+        self.data(0x3E)
         self.data(0x28)
-        self.command(ILI9341_VMCTR2)    # VCM control2
-        self.data(0x86)                    # --
-        self.command(ILI9341_MADCTL)    #  Memory Access Control
+        self.command(ILI9341_VMCTR2)  # VCM control2
+        self.data(0x86)  # --
+        self.command(ILI9341_MADCTL)  #  Memory Access Control
         self.data(0x48)
         self.command(ILI9341_PIXFMT)
         self.data(0x55)
         self.command(ILI9341_FRMCTR1)
         self.data(0x00)
         self.data(0x18)
-        self.command(ILI9341_DFUNCTR)    #  Display Function Control
+        self.command(ILI9341_DFUNCTR)  #  Display Function Control
         self.data(0x08)
         self.data(0x82)
         self.data(0x27)
-        self.command(0xF2)                #  3Gamma Function Disable
+        self.command(0xF2)  #  3Gamma Function Disable
         self.data(0x00)
-        self.command(ILI9341_GAMMASET)    # Gamma curve selected
+        self.command(ILI9341_GAMMASET)  # Gamma curve selected
         self.data(0x01)
-        self.command(ILI9341_GMCTRP1)    # Set Gamma
+        self.command(ILI9341_GMCTRP1)  # Set Gamma
         self.data(0x0F)
         self.data(0x31)
         self.data(0x2B)
@@ -275,7 +293,7 @@ class ILI9341(object):
         self.data(0x0E)
         self.data(0x09)
         self.data(0x00)
-        self.command(ILI9341_GMCTRN1)    # Set Gamma
+        self.command(ILI9341_GMCTRN1)  # Set Gamma
         self.data(0x00)
         self.data(0x0E)
         self.data(0x14)
@@ -292,16 +310,16 @@ class ILI9341(object):
         self.data(0x36)
         self.data(0x0F)
         if self._invert:
-            self.command(ILI9341_INVON)   # Invert display
+            self.command(ILI9341_INVON)  # Invert display
         else:
             self.command(ILI9341_INVOFF)  # Don't invert display
-        self.command(ILI9341_SLPOUT)    # Exit Sleep
+        self.command(ILI9341_SLPOUT)  # Exit Sleep
         time.sleep(0.120)
-        self.command(ILI9341_DISPON)    # Display on
+        self.command(ILI9341_DISPON)  # Display on
 
     def begin(self):
-        """Set up the display deprecated. 
-        Included in __init__. """
+        """Set up the display deprecated.
+        Included in __init__."""
         pass
 
     def set_window(self, x0=0, y0=0, x1=None, y1=None):
@@ -312,21 +330,21 @@ class ILI9341(object):
         to 239,319.
         """
         if x1 is None:
-            x1 = self.width-1
+            x1 = self.width - 1
         if y1 is None:
-            y1 = self.height-1
+            y1 = self.height - 1
 
-        self.command(ILI9341_CASET)        # Column addr set
+        self.command(ILI9341_CASET)  # Column addr set
         self.data(x0 >> 8)
-        self.data(x0 & 0xFF)             # XSTART
+        self.data(x0 & 0xFF)  # XSTART
         self.data(x1 >> 8)
-        self.data(x1 & 0xFF)             # XEND
-        self.command(ILI9341_PASET)        # Row addr set
+        self.data(x1 & 0xFF)  # XEND
+        self.command(ILI9341_PASET)  # Row addr set
         self.data(y0 >> 8)
-        self.data(y0 & 0xFF)             # YSTART
+        self.data(y0 & 0xFF)  # YSTART
         self.data(y1 >> 8)
-        self.data(y1 & 0xFF)             # YEND
-        self.command(ILI9341_RAMWR)        # write to RAM
+        self.data(y1 & 0xFF)  # YEND
+        self.command(ILI9341_RAMWR)  # write to RAM
 
     def display(self, image):
         """Write the provided image to the hardware.
@@ -341,19 +359,19 @@ class ILI9341(object):
 
         # Write data to hardware.
         for i in range(0, len(pixelbytes), 4096):
-            self.data(pixelbytes[i:i + 4096])
+            self.data(pixelbytes[i : i + 4096])
 
     def image_to_data(self, image, rotation=0):
         if not isinstance(image, np.ndarray):
-            image = np.array(image.convert('RGB'))
+            image = np.array(image.convert("RGB"))
 
         # Rotate the image
-        pb = np.rot90(image, rotation // 90).astype('uint16')
+        pb = np.rot90(image, rotation // 90).astype("uint16")
 
         # Mask and shift the 888 RGB into 565 RGB
-        red   = (pb[..., [0]] & 0xf8) << 8
-        green = (pb[..., [1]] & 0xfc) << 3
-        blue  = (pb[..., [2]] & 0xf8) >> 3
+        red = (pb[..., [0]] & 0xF8) << 8
+        green = (pb[..., [1]] & 0xFC) << 3
+        blue = (pb[..., [2]] & 0xF8) >> 3
 
         # Stick 'em together
         result = red | green | blue
