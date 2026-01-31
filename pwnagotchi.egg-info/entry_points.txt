@@ -1,2 +1,0 @@
-[console_scripts]
-pwnagotchi = pwnagotchi.cli:pwnagotchi_cli
