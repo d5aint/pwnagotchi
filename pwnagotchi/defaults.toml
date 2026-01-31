@@ -25,50 +25,61 @@ custom_plugins = "/usr/local/share/pwnagotchi/custom-plugins/"
 
 [main.plugins.auto-tune]
 enabled = true
+show_hidden = true
+reset_history = true
+extra_channels = 15
 
-[main.plugins.auto_backup]
-enabled = false
+[main.plugins.auto-backup]
+enabled = true
 interval = "daily"    # or "hourly", or a number (minutes)
 max_tries = 0
+max_backups_to_keep = 3
 backup_location = "/home/pi/"
 files = [
-  "/root/settings.yaml",
-  "/root/client_secrets.json",
-  "/root/.api-report.json",
-  "/root/.ssh",
-  "/root/.bashrc",
-  "/root/.profile",
-  "/home/pi/handshakes",
-  "/root/peers",
-  "/etc/pwnagotchi/",
-  "/usr/local/share/pwnagotchi/custom-plugins",
-  "/etc/ssh/",
-  "/home/pi/.bashrc",
-  "/home/pi/.profile",
-  "/home/pi/.wpa_sec_uploads"
+    "/root/brain.nn",
+    "/root/brain.json",
+    "/root/settings.yaml",
+    "/root/client_secrets.json",
+    "/root/peers",
+    "/root/.api-report.json",
+    "/root/.ssh",
+    "/root/.bashrc",
+    "/root/.profile",
+    "/home/pi/handshakes",
+    "/home/pi/.wpa_sec_uploads"
+    "/home/pi/.bashrc",
+    "/home/pi/.profile",
+    "/etc/pwnagotchi",
+    "/etc/ssh/",
+    "/usr/local/share/pwnagotchi/custom-plugins"
 ]
-exclude = [ "/etc/pwnagotchi/logs/*"]
-commands = [ "tar cf {backup_file} {files}"]
+exclude = [
+    "/etc/pwnagotchi/log/*",
+    "*.tar.gz"
+]
+commands = [
+    "tar czf {backup_file} {exclude} {files}"
+]
 
 [main.plugins.auto-update]
 enabled = true
-install = true
-interval = 1
+install = false
+interval = 12
 token = "" # Create a personal access token (classic) with scope set to public_repo to use the GitHub API
 
 [main.plugins.bt-tether]
 enabled = false
-phone-name = "" # name as shown on the phone i.e. "Pwnagotchi's Phone"
+phone-name = ""         # name as shown on the phone i.e. "Pwnagotchi's Phone"
 mac = ""
-phone = "" # android or ios
-ip = "" # optional, default : 192.168.44.2 if android or 172.20.10.2 if ios
-gateway = "" #optional, default : 192.168.44.1 if android or 172.20.10.2 if ios
+phone = ""              # android or ios
+ip = ""                 # optional, default : 192.168.44.2 if android or 172.20.10.2 if ios
+gateway = ""            #optional, default : 192.168.44.1 if android or 172.20.10.2 if ios
 dns = "8.8.8.8 1.1.1.1" # optional, default (google): "8.8.8.8 1.1.1.1". Consider using anonymous DNS like OpenNic :-)
 
-[main.plugins.fix_services]
+[main.plugins.cache]
 enabled = true
 
-[main.plugins.cache]
+[main.plugins.fix-services]
 enabled = true
 
 [main.plugins.gdrivesync]
@@ -77,15 +88,20 @@ backupfiles = [""]
 backup_folder = "PwnagotchiBackups"
 interval = 1
 
-[main.plugins.gpio_buttons]
+[main.plugins.gpio-buttons]
 enabled = false
+[main.plugins.gpio_buttons.gpios]
+5 = "touch /root/button_5_pressed"
+6 = "shutdown -h now"
+13 = "systemctl restart pwnagotchi"
+21 = "echo 'Button 21 clicked' >> /var/log/pwnagotchi.log"
 
 [main.plugins.gps]
 enabled = false
 speed = 19200
 device = "/dev/ttyUSB0" # for GPSD: "localhost:2947"
 
-[main.plugins.gps_listener]
+[main.plugins.gps-listener]
 enabled = false
 
 [main.plugins.grid]
@@ -100,25 +116,21 @@ max-lines = 10000
 enabled = false
 scale = "celsius"
 orientation = "horizontal"
+fields = "mem,cpu,temp"
+linespacing = 6
 
 [main.plugins.ohcapi]
 enabled = false
 api_key = "sk_your_api_key_here"
 receive_email = "yes"
 
-[main.plugins.pwndroid]
-enabled = false
-gateway = "" # leave empty unless you need a specific gateway
-display = false # show coords on display
-display_altitude = false # show altitude on display
-
 [main.plugins.pisugarx]
 enabled = false
-rotation = false
-default_display = "percentage"
-lowpower_shutdown = true
-lowpower_shutdown_level = 10 # battery percent at which the device will turn off
-max_charge_voltage_protection = false #It will limit the battery voltage to about 80% to extend battery life
+rotation = true                      # Rotate between Voltage/Level/Temp
+default_display = "percentage"       # If rotation is false, show this
+lowpower_shutdown = true             # Safe shutdown at low battery
+lowpower_shutdown_level = 10         # Shutdown at 10%
+max_charge_voltage_protection = true # It will limit the battery voltage to about 80% to extend battery life
 
 [main.plugins.pwncrack]
 enabled = false
@@ -127,13 +139,6 @@ key = ""
 [main.plugins.session-stats]
 enabled = false
 save_directory = "/var/tmp/pwnagotchi/sessions/"
-
-[main.plugins.ups_hat_c]
-enabled = false
-label_on = true  # show BAT label or just percentage
-shutdown = 5  # battery percent at which the device will turn off
-bat_x_coord = 140
-bat_y_coord = 0
 
 [main.plugins.ups_lite]
 enabled = false
@@ -196,6 +201,11 @@ invert = false # false = black background, true = white background
 cursor = true
 fps = 0.0
 
+[ui.display]
+enabled = false
+rotation = 180
+type = "waveshare_4"
+
 [ui.font]
 name = "DejaVuSansMono" # for japanese: fonts-japanese-gothic
 size_offset = 0 # will be added to the font size
@@ -217,7 +227,7 @@ motivated = ["(☼‿‿☼)"]
 demotivated = ["(≖__≖)"]
 smart = ["(✜‿‿✜)"]
 lonely = ["(ب__ب)"]
-sad = ["(╥☁╥ )"]
+sad = ["(╥☁╥ )", "(ب__ب)"]
 angry = ["(-_-')", "(⇀__⇀)", "(`___´)"]
 friend = ["(♥‿‿♥)", "(♡‿‿♡)", "(♥‿♥ )", "(♥ω♥ )"]
 broken = ["(☓‿‿☓)"]
@@ -236,11 +246,6 @@ password = "changeme" # if auth is true
 origin = ""
 port = 8080
 on_frame = ""
-
-[ui.display]
-enabled = false
-rotation = 180
-type = "waveshare_4"
 
 [bettercap]
 handshakes = "/home/pi/handshakes"
